@@ -7,7 +7,8 @@ CKB anyone-can-pay lock.
 ## Build
 
 ``` sh
-make all-via-docker && cargo test
+git submodule update --init --recursive
+make all-via-docker 
 ```
 
 ## Quick start
