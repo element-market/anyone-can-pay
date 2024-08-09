@@ -8,7 +8,7 @@
 #define OP_BUY 1
 
 #define MAX_PRICE 100000000000000000ULL // 1 billion ckb
-#define CAPACITY_DIFFERENCE 6100000000ULL // 61 ckb
+#define CAPACITY_DIFFERENCE 8500000000ULL // 85 ckb
 #define MAX_PLATFORM_RATE 500   // 5%
 #define MAX_ROYALTY_RATE 1000   // 10%
 
@@ -21,16 +21,18 @@ typedef struct {
 
 typedef struct {
   uint64_t price;
+  uint64_t extra_data_length;
   uint8_t lock_hash[HASH_SIZE];
 } listing_args_t;
 
-// 0x27628f025b0f2228c8562abfec6897b65bf34f5e18bf01e7ebf29e8c71b8ccaf
+// 0x8dbd23caa1387f636dec7db4077bd3f90552caf9d359a67c30b30c4da8d5a7b6
 static uint8_t LISTING_CODE_HASH[32] = {
-	0x27, 0x62, 0x8f, 0x02, 0x5b, 0x0f, 0x22, 0x28, 0xc8, 0x56, 0x2a, 0xbf, 0xec, 0x68, 0x97, 0xb6, 0x5b, 0xf3, 0x4f, 0x5e, 0x18, 0xbf, 0x01, 0xe7, 0xeb, 0xf2, 0x9e, 0x8c, 0x71, 0xb8, 0xcc, 0xaf
+  0x8d, 0xbd, 0x23, 0xca, 0xa1, 0x38, 0x7f, 0x63, 0x6d, 0xec, 0x7d, 0xb4, 0x07, 0x7b, 0xd3, 0xf9, 0x05, 0x52, 0xca, 0xf9, 0xd3, 0x59, 0xa6, 0x7c, 0x30, 0xb3, 0x0c, 0x4d, 0xa8, 0xd5, 0xa7, 0xb6
 };
 
-// 
+// 0xce321b5ab5baf86c00ab8b44d68d1a6ff6196b8f
 static uint8_t PUB_KEY[BLAKE160_SIZE] = {
+  0xce, 0x32, 0x1b, 0x5a, 0xb5, 0xba, 0xf8, 0x6c, 0x00, 0xab, 0x8b, 0x44, 0xd6, 0x8d, 0x1a, 0x6f, 0xf6, 0x19, 0x6b, 0x8f
 };
 
 bool is_listing_script(uint8_t* code_hash, uint8_t hash_type) {
@@ -204,6 +206,16 @@ int load_witness_data(void* buffer, witness_data_t* witness_data) {
   return -6;  // Unknown op_code
 }
 
+bool isSegOutOfBounds(const mol_seg_t* inner_seg, const mol_seg_t* outer_seg) {
+  if (inner_seg->ptr < outer_seg->ptr) {
+    return true;
+  }
+  if ((inner_seg->ptr + inner_seg->size) > (outer_seg->ptr + outer_seg->size)) {
+    return true;
+  }
+  return false;
+}
+
 int get_input_listing_args(
   void* buffer, 
   blake2b_state* blake2b_ctx_ptr, 
@@ -220,40 +232,59 @@ int get_input_listing_args(
   script_seg.ptr = (uint8_t *)buffer;
   script_seg.size = len;
 
-  // lLad script.args
+  // Read script.args
   mol_seg_t args_seg = MolReader_Script_get_args(&script_seg);
-  if (args_seg.ptr == NULL || args_seg.size == 0) {
+  if (args_seg.size < MOL_NUM_T_SIZE || isSegOutOfBounds(&args_seg, &script_seg)) {
     return -2;
   }
-
-  // Parse raw args bytes
-  mol_seg_t args_raw_seg = MolReader_Bytes_raw_bytes(&args_seg);
-  if (args_raw_seg.ptr == NULL || args_raw_seg.size < 8) {
+  mol_seg_t raw_bytes_seg = MolReader_Bytes_raw_bytes(&args_seg);
+  if (raw_bytes_seg.size == 0 || isSegOutOfBounds(&raw_bytes_seg, &args_seg)) {
     return -3;
   }
 
-  // 8 bytes[price] + x bytes[payee lock script]
-  uint64_t price = 0;
-  for (size_t i = 0; i < 8; i++) {
-    price = (price << 8) | (uint64_t)(args_raw_seg.ptr[i]);
-  }
-  listing_args->price = price;
-
-  // Calculate the payee lock_hash
-  blake2b_init(blake2b_ctx_ptr, HASH_SIZE);
-  blake2b_update(blake2b_ctx_ptr, args_raw_seg.ptr + 8, args_raw_seg.size - 8);
-  if (blake2b_final(blake2b_ctx_ptr, listing_args->lock_hash, HASH_SIZE) != 0) {
+  // Read price
+  mol_seg_t price_seg = mol_table_slice_by_index(&raw_bytes_seg, 0);
+  if (price_seg.size != 8 || isSegOutOfBounds(&price_seg, &raw_bytes_seg)) {
     return -4;
   }
+  listing_args->price = *((uint64_t *)price_seg.ptr);
+
+  // Read address bytes
+  mol_seg_t address_bytes_seg = mol_table_slice_by_index(&raw_bytes_seg, 1);
+  if (address_bytes_seg.size < MOL_NUM_T_SIZE || isSegOutOfBounds(&address_bytes_seg, &raw_bytes_seg)) {
+    return -5;
+  }
+  mol_seg_t raw_address_bytes_seg = MolReader_Bytes_raw_bytes(&address_bytes_seg);
+  if (raw_address_bytes_seg.size < MOL_NUM_T_SIZE || isSegOutOfBounds(&raw_address_bytes_seg, &address_bytes_seg)) {
+    return -6;
+  }
+
+  // Calc lock hash of address
+  blake2b_init(blake2b_ctx_ptr, HASH_SIZE);
+  blake2b_update(blake2b_ctx_ptr, raw_address_bytes_seg.ptr, raw_address_bytes_seg.size);
+  if (blake2b_final(blake2b_ctx_ptr, listing_args->lock_hash, HASH_SIZE) != 0) {
+    return -7;
+  }
+
+  // Read extra data length
+  mol_seg_t extra_bytes_seg = mol_table_slice_by_index(&raw_bytes_seg, 2);
+  if (extra_bytes_seg.size < MOL_NUM_T_SIZE || isSegOutOfBounds(&extra_bytes_seg, &raw_bytes_seg)) {
+    return -8;
+  }
+  mol_seg_t raw_extra_bytes_seg = MolReader_Bytes_raw_bytes(&extra_bytes_seg);
+  if (isSegOutOfBounds(&raw_extra_bytes_seg, &extra_bytes_seg)) {
+    return -9;
+  }
+  listing_args->extra_data_length = raw_extra_bytes_seg.size * 100000000ULL;
   return 0;
 }
 
 /** 
  * Require: 1) inputs[n].lock_hash == inputs[i].lock_script.listing_args.lock_hash
  *          2) inputs[n].lock_hash == outputs[i].lock_hash 
- *          3) inputs[i].type_hash == outputs[i].type_hash
- *          4) inputs[i].data_hash == outputs[i].data_hash
- *          5) inputs[i].capacity == outputs[i].capacity + CAPACITY_DIFFERENCE
+ *          3) inputs[i].capacity == outputs[i].capacity + CAPACITY_DIFFERENCE + listing_args.extra_data_length
+ *          4) inputs[i].type_hash == outputs[i].type_hash
+ *          5) inputs[i].data_hash == outputs[i].data_hash
  **/
 int check_cancel(void* buffer, int listing_inputs_len) {
   int n = listing_inputs_len;
@@ -266,13 +297,17 @@ int check_cancel(void* buffer, int listing_inputs_len) {
     return -1;
   }
 
+  listing_args_t listing_args;
+  blake2b_state blake2b_ctx;
+  uint64_t input_capacity;
+  uint64_t output_capacity;
+
   /** 
    * Check inputs[n].lock_hash == inputs[i].lock_script.listing_args.lock_hash
    *       inputs[n].lock_hash == outputs[i].lock_hash
+   *       inputs[i].capacity == outputs[i].capacity + CAPACITY_DIFFERENCE + listing_args.extra_data_length
    **/
   int i = 0;
-  listing_args_t listing_args;
-  blake2b_state blake2b_ctx;
   while (i < n) {
     // Load inputs[i].lock_script.listing_args
     if (get_input_listing_args(buffer, &blake2b_ctx, i, &listing_args) != 0) {
@@ -296,6 +331,28 @@ int check_cancel(void* buffer, int listing_inputs_len) {
       return -5;
     }
 
+    // Load inputs[i].capacity
+    len = 8;
+    ret = ckb_load_cell_by_field(
+      ((unsigned char *)&input_capacity), &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_CAPACITY
+    );
+    if (ret != CKB_SUCCESS || len != 8) {
+      return -6;
+    }
+
+    // Load outputs[i].capacity
+    ret = ckb_load_cell_by_field(
+      ((unsigned char *)&output_capacity), &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_CAPACITY
+    );
+    if (ret != CKB_SUCCESS || len != 8) {
+      return -7;
+    }
+
+    // Check inputs[i].capacity == outputs[i].capacity + CAPACITY_DIFFERENCE + listing_args.extra_data_length
+    if (input_capacity != output_capacity + CAPACITY_DIFFERENCE + listing_args.extra_data_length) {
+      return -8;
+    }
+
     i++;
   }
 
@@ -309,67 +366,34 @@ int check_cancel(void* buffer, int listing_inputs_len) {
     len = HASH_SIZE;
     ret = ckb_checked_load_cell_by_field(hash, &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_TYPE_HASH);
     if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-      return -6;
+      return -9;
     }
 
     // Load outputs[i].type_hash
     ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE_HASH);
     if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-      return -7;
+      return -10;
     }
 
     // Check if input[i].type_hash == output[i].type_hash
     if (memcmp(hash, buffer, HASH_SIZE) != 0) {
-      return -8;
+      return -11;
     }
 
     // Load inputs[i].data_hash
     ret = ckb_checked_load_cell_by_field(hash, &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_DATA_HASH);
     if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-      return -9;
+      return -12;
     }
 
     // Load outputs[i].data_hash
     ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_DATA_HASH);
     if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-      return -10;
+      return -13;
     }
 
     // Check if input[i].data_hash == output[i].data_hash
     if (memcmp(hash, buffer, HASH_SIZE) != 0) {
-      return -11;
-    }
-
-    i++;
-  }
-
-  /** 
-   * Check inputs[i].capacity == outputs[i].capacity + CAPACITY_DIFFERENCE
-   **/
-  i = 0;
-  uint64_t input_capacity;
-  uint64_t output_capacity;
-  while (i < n) {
-    len = 8;
-
-    // Load inputs[i].capacity
-    ret = ckb_load_cell_by_field(
-      ((unsigned char *)&input_capacity), &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_CAPACITY
-    );
-    if (ret != CKB_SUCCESS || len != 8) {
-      return -12;
-    }
-
-    // Load outputs[i].capacity
-    ret = ckb_load_cell_by_field(
-      ((unsigned char *)&output_capacity), &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_CAPACITY
-    );
-    if (ret != CKB_SUCCESS || len != 8) {
-      return -13;
-    }
-
-    // Check if inputs[i].capacity == outputs[i].capacity + CAPACITY_DIFFERENCE
-    if (input_capacity != output_capacity + CAPACITY_DIFFERENCE) {
       return -14;
     }
 
@@ -457,12 +481,13 @@ int check_buy(void* buffer, uint16_t fee_rate, int listing_inputs_len) {
     }
 
     /** 
-     * Check outputs[i].capacity <= price + CAPACITY_DIFFERENCE
-     *       outputs[i].capacity >= price + CAPACITY_DIFFERENCE - fee
+     * Check outputs[i].capacity <= price + capacity_difference
+     *       outputs[i].capacity >= price + capacity_difference - fee
      **/
+    uint64_t capacity_difference = CAPACITY_DIFFERENCE + listing_args.extra_data_length;
     if (
-      capacity > listing_args.price + CAPACITY_DIFFERENCE ||
-      capacity < listing_args.price + CAPACITY_DIFFERENCE - (listing_args.price / 10000 * fee_rate)
+      capacity > listing_args.price + capacity_difference ||
+      capacity < listing_args.price + capacity_difference - (listing_args.price / 10000 * fee_rate)
     ) {
       return -6;  // error outputs[i].capacity
     }
