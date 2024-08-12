@@ -10,25 +10,6 @@
 #define SIGNATURE_SIZE 65
 
 
-/* Extract lock from WitnessArgs */
-int extract_witness_lock(uint8_t *witness, uint64_t len,
-                         mol_seg_t *lock_bytes_seg) {
-  mol_seg_t witness_seg;
-  witness_seg.ptr = witness;
-  witness_seg.size = len;
-
-  if (MolReader_WitnessArgs_verify(&witness_seg, false) != MOL_OK) {
-    return -1;
-  }
-  mol_seg_t lock_seg = MolReader_WitnessArgs_get_lock(&witness_seg);
-
-  if (MolReader_BytesOpt_is_none(&lock_seg)) {
-    return -2;
-  }
-  *lock_bytes_seg = MolReader_Bytes_raw_bytes(&lock_seg);
-  return CKB_SUCCESS;
-}
-
 int validate_signature(
   uint8_t pubkey_hash[BLAKE160_SIZE],
   uint8_t message_hash[HASH_SIZE],
@@ -37,7 +18,7 @@ int validate_signature(
   secp256k1_context context;
   uint8_t secp_data[CKB_SECP256K1_DATA_SIZE];
   if (ckb_secp256k1_custom_verify_only_initialize(&context, secp_data) != 0) {
-    return -1;  // error secp256k1 initialize
+    return 1;  // error secp256k1 initialize
   }
 
   secp256k1_ecdsa_recoverable_signature signature;
@@ -49,13 +30,13 @@ int validate_signature(
       signature_bytes[RECID_INDEX]
     ) == 0
   ) {
-    return -2;  // error parse signature
+    return 2;  // error parse signature
   }
 
   /* Recover pubkey */
   secp256k1_pubkey pubkey;
   if (secp256k1_ecdsa_recover(&context, &pubkey, &signature, message_hash) != 1) {
-    return -3;  // error recover pubkey
+    return 3;  // error recover pubkey
   }
 
   /* Serialize pubkey */
@@ -70,14 +51,14 @@ int validate_signature(
       SECP256K1_EC_COMPRESSED
     ) != 1
   ) {
-    return -4;  // error serialize pubkey
+    return 4;  // error serialize pubkey
   }
 
   // As mentioned above, we are only using the first 160 bits(20 bytes), if they match
   // the value provided as the first 20 bytes of script args, the signature verification
   // is considered to be successful.
   if (memcmp(pubkey_hash, output_pubkey, BLAKE160_SIZE) != 0) {
-    return -5;  // error pubkey hash
+    return 5;  // error pubkey hash
   }
   return 0;
 }
