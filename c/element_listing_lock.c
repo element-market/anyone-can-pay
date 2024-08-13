@@ -358,36 +358,51 @@ int check_cancel(void* buffer, int listing_inputs_len) {
     // Load inputs[i].type_hash
     len = HASH_SIZE;
     ret = ckb_checked_load_cell_by_field(hash, &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_TYPE_HASH);
-    if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-      return 9;
-    }
-
-    // Load outputs[i].type_hash
-    ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE_HASH);
-    if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-      return 10;
-    }
-
-    // Check if input[i].type_hash == output[i].type_hash
-    if (memcmp(hash, buffer, HASH_SIZE) != 0) {
-      return 11;
-    }
-
-    // Load inputs[i].data_hash
-    ret = ckb_checked_load_cell_by_field(hash, &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_DATA_HASH);
-    if (ret != CKB_SUCCESS || len != HASH_SIZE) {
+    if (ret == CKB_ITEM_MISSING) {
+      // Load outputs[i].type_hash
+      len = HASH_SIZE;
+      ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE_HASH);
+      if (ret != CKB_ITEM_MISSING) {
+        return 9;
+      }
+    } else if (ret == CKB_SUCCESS && len == HASH_SIZE) {
+      // Load outputs[i].type_hash
+      ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE_HASH);
+      if (ret != CKB_SUCCESS || len != HASH_SIZE) {
+        return 10;
+      }
+      
+      // Check if input[i].type_hash == output[i].type_hash
+      if (memcmp(hash, buffer, HASH_SIZE) != 0) {
+        return 11;
+      }
+    } else {
       return 12;
     }
 
-    // Load outputs[i].data_hash
-    ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_DATA_HASH);
-    if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-      return 13;
-    }
+    // Load inputs[i].data_hash
+    len = HASH_SIZE;
+    ret = ckb_checked_load_cell_by_field(hash, &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_DATA_HASH);
+    if (ret == CKB_ITEM_MISSING) {
+      // Load outputs[i].data_hash
+      len = HASH_SIZE;
+      ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_DATA_HASH);
+      if (ret != CKB_ITEM_MISSING) {
+        return 13;
+      }
+    } else if (ret == CKB_SUCCESS && len == HASH_SIZE) {
+       // Load outputs[i].data_hash
+      ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_DATA_HASH);
+      if (ret != CKB_SUCCESS || len != HASH_SIZE) {
+        return 14;
+      }
 
-    // Check if input[i].data_hash == output[i].data_hash
-    if (memcmp(hash, buffer, HASH_SIZE) != 0) {
-      return 14;
+      // Check if input[i].data_hash == output[i].data_hash
+      if (memcmp(hash, buffer, HASH_SIZE) != 0) {
+        return 15;
+      }
+    } else {
+      return 16;
     }
 
     i++;
