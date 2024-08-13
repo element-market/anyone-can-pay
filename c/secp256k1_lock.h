@@ -41,11 +41,11 @@ int validate_signature(
 
   /* Serialize pubkey */
   size_t pubkey_size = PUBKEY_SIZE;
-  uint8_t output_pubkey[PUBKEY_SIZE];
+  uint8_t temp[PUBKEY_SIZE];
   if (
     secp256k1_ec_pubkey_serialize(
       &context, 
-      output_pubkey, 
+      temp, 
       &pubkey_size, 
       &pubkey, 
       SECP256K1_EC_COMPRESSED
@@ -54,10 +54,15 @@ int validate_signature(
     return 4;  // error serialize pubkey
   }
 
+  blake2b_state blake2b_ctx;
+  blake2b_init(&blake2b_ctx, HASH_SIZE);
+  blake2b_update(&blake2b_ctx, temp, pubkey_size);
+  blake2b_final(&blake2b_ctx, temp, HASH_SIZE);
+
   // As mentioned above, we are only using the first 160 bits(20 bytes), if they match
   // the value provided as the first 20 bytes of script args, the signature verification
   // is considered to be successful.
-  if (memcmp(pubkey_hash, output_pubkey, BLAKE160_SIZE) != 0) {
+  if (memcmp(pubkey_hash, temp, BLAKE160_SIZE) != 0) {
     return 5;  // error pubkey hash
   }
   return 0;

@@ -31,7 +31,7 @@ static uint8_t LISTING_CODE_HASH[32] = {
 };
 
 // 0xce321b5ab5baf86c00ab8b44d68d1a6ff6196b8f
-static uint8_t PUB_KEY[BLAKE160_SIZE] = {
+static uint8_t PUB_KEY_HASH[BLAKE160_SIZE] = {
   0xce, 0x32, 0x1b, 0x5a, 0xb5, 0xba, 0xf8, 0x6c, 0x00, 0xab, 0x8b, 0x44, 0xd6, 0x8d, 0x1a, 0x6f, 0xf6, 0x19, 0x6b, 0x8f
 };
 
@@ -399,9 +399,9 @@ int check_cancel(void* buffer, int listing_inputs_len) {
 int check_signature(void* buffer, witness_data_t* witness_data) {
   // Load tx hash
   uint64_t len = HASH_SIZE;
-  int ret = ckb_load_tx_hash(buffer, &len, 0);
+  int ret = ckb_checked_load_tx_hash(buffer, &len, 0);
   if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-    return 10;
+    return 1;
   }
 
   // message = 32 bytes(tx_hash) + 1 bytes(op_code) + 2 bytes(platform_rate) + 2 bytes(royalty_rate)
@@ -417,21 +417,20 @@ int check_signature(void* buffer, witness_data_t* witness_data) {
   blake2b_init(&blake2b_ctx, HASH_SIZE);
   blake2b_update(&blake2b_ctx, buffer, HASH_SIZE + 5);
   if (blake2b_final(&blake2b_ctx, buffer, HASH_SIZE) != 0) {
-    return 20;
+    return 2;
   }
 
   // Validate signature
-  ret = validate_signature(PUB_KEY, buffer, witness_data->signature);
+  ret = validate_signature(PUB_KEY_HASH, buffer, witness_data->signature);
   if (ret != 0) {
-    return 30 + ret;
+    return 3 + ret;
   }
   return 0;
 }
 
 /**
  * Require: 1) inputs[i].lock_script.listing_args.lock_hash == outputs[i].lock_hash
- *          2) outputs[i].capacity <= price + CAPACITY_DIFFERENCE
- *          3) outputs[i].capacity >= price + CAPACITY_DIFFERENCE - fee
+ *          2) outputs[i].capacity == price + CAPACITY_DIFFERENCE - fee
  **/
 int check_buy(void* buffer, uint16_t fee_rate, int listing_inputs_len) {
   int ret;
@@ -474,14 +473,10 @@ int check_buy(void* buffer, uint16_t fee_rate, int listing_inputs_len) {
     }
 
     /**
-     * Check outputs[i].capacity <= price + capacity_difference
-     *       outputs[i].capacity >= price + capacity_difference - fee
+     * Check outputs[i].capacity == price + capacity_difference - fee
      **/
     uint64_t capacity_difference = CAPACITY_DIFFERENCE + listing_args.extra_data_length;
-    if (
-      capacity > listing_args.price + capacity_difference ||
-      capacity < listing_args.price + capacity_difference - (listing_args.price / 10000 * fee_rate)
-    ) {
+    if (capacity != listing_args.price + capacity_difference - (listing_args.price / 10000 * fee_rate)) {
       return 6;  // error outputs[i].capacity
     }
 
@@ -534,14 +529,14 @@ int main() {
     // Check signature
     ret = check_signature(buffer, &witness_data);
     if (ret != 0) {
-      return 600 + ret;
+      return 70 + ret;
     }
 
     // Check buy
     uint16_t fee_rate = witness_data.platform_rate + witness_data.royalty_rate;
     ret = check_buy(buffer, fee_rate, listing_inputs_len);
     if (ret != 0) {
-      return 700 + ret;
+      return 80 + ret;
     }
   }
   return 0;
