@@ -383,26 +383,19 @@ int check_cancel(void* buffer, int listing_inputs_len) {
     // Load inputs[i].data_hash
     len = HASH_SIZE;
     ret = ckb_checked_load_cell_by_field(hash, &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_DATA_HASH);
-    if (ret == CKB_ITEM_MISSING) {
+    if (ret == CKB_SUCCESS && len == HASH_SIZE) {
       // Load outputs[i].data_hash
-      len = HASH_SIZE;
-      ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_DATA_HASH);
-      if (ret != CKB_ITEM_MISSING) {
-        return 13;
-      }
-    } else if (ret == CKB_SUCCESS && len == HASH_SIZE) {
-       // Load outputs[i].data_hash
       ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_DATA_HASH);
       if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-        return 14;
+        return 13;
       }
 
       // Check if input[i].data_hash == output[i].data_hash
       if (memcmp(hash, buffer, HASH_SIZE) != 0) {
-        return 15;
+        return 14;
       }
     } else {
-      return 16;
+      return 15;
     }
 
     i++;
