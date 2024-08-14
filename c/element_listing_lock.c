@@ -7,6 +7,7 @@
 #define OP_CANCEL 0
 #define OP_BUY 1
 
+#define CKB_UNIT 100000000ULL
 #define MAX_PRICE 100000000000000000ULL // 1 billion ckb
 #define CAPACITY_DIFFERENCE 8500000000ULL // 85 ckb
 #define MAX_PLATFORM_RATE 500   // 5%
@@ -268,7 +269,7 @@ int get_input_listing_args(
   if (isSegOutOfBounds(&raw_extra_bytes_seg, &extra_bytes_seg)) {
     return 9;
   }
-  listing_args->extra_data_length = raw_extra_bytes_seg.size * 100000000ULL;
+  listing_args->extra_data_length = raw_extra_bytes_seg.size * CKB_UNIT;
   return 0;
 }
 
@@ -438,12 +439,15 @@ int check_signature(void* buffer, witness_data_t* witness_data) {
 
 /**
  * Require: 1) inputs[i].lock_script.listing_args.lock_hash == outputs[i].lock_hash
- *          2) outputs[i].capacity == price + CAPACITY_DIFFERENCE - fee
+ *          2) outputs[i].capacity == price + capacity_difference - fee
  **/
 int check_buy(void* buffer, uint16_t fee_rate, int listing_inputs_len) {
   int ret;
   uint64_t len;
-  uint64_t capacity;
+  uint64_t input_capacity;
+  uint64_t input_occupied_capacity;
+  uint64_t capacity_difference;
+  uint64_t output_capacity;
   listing_args_t listing_args;
   blake2b_state blake2b_ctx;
 
@@ -454,38 +458,56 @@ int check_buy(void* buffer, uint16_t fee_rate, int listing_inputs_len) {
       return 1;
     }
 
+    // Check price
+    if (listing_args.price > MAX_PRICE) {
+      return 2;  // error price overflow
+    }
+
     // Load outputs[i].lock_hash
     len = HASH_SIZE;
     ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_LOCK_HASH);
     if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-      return 2;  // error load outputs[i].lock_hash
+      return 3;  // error load outputs[i].lock_hash
     }
 
     // Check if inputs[i].lock_script.listing_args == outputs[i].lock_hash
     if (memcmp(listing_args.lock_hash, buffer, HASH_SIZE) != 0) {
-      return 3;  // error outputs[i].lock_script
+      return 4;  // error outputs[i].lock_script
     }
 
-     // Load outputs[i].capacity
+    // Load inputs[i].capacity
     len = 8;
     ret = ckb_load_cell_by_field(
-      ((unsigned char *)&capacity), &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_CAPACITY
+      ((unsigned char *)&input_capacity), &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_CAPACITY
     );
     if (ret != CKB_SUCCESS || len != 8) {
-      return 4;  // error load outputs[i].capacity
+      return 5;  // error load inputs[i].capacity
     }
 
-    // Check if price overflow
-    if (listing_args.price > MAX_PRICE) {
-      return 5;  // error price overflow
+    // Load inputs[i].occupied_capacity
+    ret = ckb_load_cell_by_field(
+      ((unsigned char *)&input_occupied_capacity), &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_OCCUPIED_CAPACITY
+    );
+    if (ret != CKB_SUCCESS || len != 8) {
+      return 6;  // error load inputs[i].occupied_capacity
+    }
+
+    // Load outputs[i].capacity
+    ret = ckb_load_cell_by_field(
+      ((unsigned char *)&output_capacity), &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_CAPACITY
+    );
+    if (ret != CKB_SUCCESS || len != 8) {
+      return 7;  // error load outputs[i].capacity
     }
 
     /**
      * Check outputs[i].capacity == price + capacity_difference - fee
      **/
-    uint64_t capacity_difference = CAPACITY_DIFFERENCE + listing_args.extra_data_length;
-    if (capacity != listing_args.price + capacity_difference - (listing_args.price / 10000 * fee_rate)) {
-      return 6;  // error outputs[i].capacity
+    capacity_difference = CAPACITY_DIFFERENCE + listing_args.extra_data_length + input_capacity - input_occupied_capacity - CKB_UNIT;
+    if (
+      output_capacity != listing_args.price + capacity_difference - (listing_args.price / 10000 * fee_rate)
+    ) {
+      return 8;  // error outputs[i].capacity
     }
 
     i++;
