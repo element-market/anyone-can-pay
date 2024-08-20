@@ -6,12 +6,29 @@
 
 #define OP_CANCEL 0
 #define OP_BUY 1
+#define OP_SELL 2
+
+#define ORDER_SIDE_OFFER 0
+#define ORDER_SIDE_LISTING 1
 
 #define CKB_UNIT 100000000ULL
 #define MAX_PRICE 100000000000000000ULL // 1 billion ckb
-#define CAPACITY_DIFFERENCE 8500000000ULL // 85 ckb
+
+#define CANCEL_CAPACITY_DIFFERENCE 8600000000ULL // 86 ckb
+#define LISTING_CAPACITY_DIFFERENCE 9400000000ULL // 94 ckb
+
 #define MAX_PLATFORM_RATE 500   // 5%
 #define MAX_ROYALTY_RATE 1000   // 10%
+
+// 0x8dbd23caa1387f636dec7db4077bd3f90552caf9d359a67c30b30c4da8d5a7b6
+static uint8_t ELEMENT_LOCK_CODE_HASH[32] = {
+  0x8d, 0xbd, 0x23, 0xca, 0xa1, 0x38, 0x7f, 0x63, 0x6d, 0xec, 0x7d, 0xb4, 0x07, 0x7b, 0xd3, 0xf9, 0x05, 0x52, 0xca, 0xf9, 0xd3, 0x59, 0xa6, 0x7c, 0x30, 0xb3, 0x0c, 0x4d, 0xa8, 0xd5, 0xa7, 0xb6
+};
+
+// 0xce321b5ab5baf86c00ab8b44d68d1a6ff6196b8f
+static uint8_t PUB_KEY_HASH[BLAKE160_SIZE] = {
+  0xce, 0x32, 0x1b, 0x5a, 0xb5, 0xba, 0xf8, 0x6c, 0x00, 0xab, 0x8b, 0x44, 0xd6, 0x8d, 0x1a, 0x6f, 0xf6, 0x19, 0x6b, 0x8f
+};
 
 typedef struct {
   uint8_t op_code;
@@ -21,23 +38,21 @@ typedef struct {
 } witness_data_t;
 
 typedef struct {
+  uint64_t additional_size;
+  uint8_t lock_hash[HASH_SIZE];
+} cancel_args_t;
+
+typedef struct {
   uint64_t price;
-  uint64_t extra_data_length;
+  uint64_t extra_size;
   uint8_t lock_hash[HASH_SIZE];
 } listing_args_t;
 
-// 0x8dbd23caa1387f636dec7db4077bd3f90552caf9d359a67c30b30c4da8d5a7b6
-static uint8_t LISTING_CODE_HASH[32] = {
-  0x8d, 0xbd, 0x23, 0xca, 0xa1, 0x38, 0x7f, 0x63, 0x6d, 0xec, 0x7d, 0xb4, 0x07, 0x7b, 0xd3, 0xf9, 0x05, 0x52, 0xca, 0xf9, 0xd3, 0x59, 0xa6, 0x7c, 0x30, 0xb3, 0x0c, 0x4d, 0xa8, 0xd5, 0xa7, 0xb6
-};
+static int get_cancel_args(void* buffer, blake2b_state* blake2b_ctx_ptr, size_t input_index, cancel_args_t* args);
+static int get_listing_args(void* buffer, blake2b_state* blake2b_ctx_ptr, size_t input_index, listing_args_t* args);
 
-// 0xce321b5ab5baf86c00ab8b44d68d1a6ff6196b8f
-static uint8_t PUB_KEY_HASH[BLAKE160_SIZE] = {
-  0xce, 0x32, 0x1b, 0x5a, 0xb5, 0xba, 0xf8, 0x6c, 0x00, 0xab, 0x8b, 0x44, 0xd6, 0x8d, 0x1a, 0x6f, 0xf6, 0x19, 0x6b, 0x8f
-};
-
-bool is_listing_script(uint8_t* code_hash, uint8_t hash_type) {
-  return hash_type == 1 && memcmp(code_hash, LISTING_CODE_HASH, HASH_SIZE) == 0;
+bool is_element_lock_script(uint8_t* code_hash, uint8_t hash_type) {
+  return hash_type == 1 && memcmp(code_hash, ELEMENT_LOCK_CODE_HASH, HASH_SIZE) == 0;
 }
 
 int get_code_hash_and_hash_type(void* script, uint64_t len, uint8_t** p_code_hash, uint8_t* p_hash_type) {
@@ -64,15 +79,15 @@ int get_code_hash_and_hash_type(void* script, uint64_t len, uint8_t** p_code_has
   return 0;
 }
 
-// Require script.code_hash == LISTING_CODE_HASH && script.hash_type == 'type'
-// Require script.code_hash == LISTING_CODE_HASH && script.hash_type == 'type'
+// Require script.code_hash == ELEMENT_LOCK_CODE_HASH && script.hash_type == 'type'
+// Require script.code_hash == ELEMENT_LOCK_CODE_HASH && script.hash_type == 'type'
 int check_current_script(void* buffer) {
   uint64_t len = BUFFER_SIZE;
   if (ckb_checked_load_script(buffer, &len, 0) == CKB_SUCCESS) {
     uint8_t* code_hash;
     uint8_t hash_type;
     if (get_code_hash_and_hash_type(buffer, len, &code_hash, &hash_type) == 0) {
-      return is_listing_script(code_hash, hash_type) ? 0 : 3;
+      return is_element_lock_script(code_hash, hash_type) ? 0 : 3;
     } else {
       return 2;
     }
@@ -81,18 +96,18 @@ int check_current_script(void* buffer) {
 }
 
 /**
- * Require: listing inputs [0, n - 1] at the front
+ * Require: order inputs [0, n - 1] at the front
  *          other inputs [n, total_inputs_len - 1] at the back
  */
-int check_and_calc_listing_inputs_len(void* buffer, int* ptr_listing_inputs_len) {
+int check_and_calc_order_inputs_len(void* buffer, int* ptr_order_inputs_len) {
   int ret;
   uint64_t len;
   uint8_t* code_hash;
   uint8_t hash_type;
 
   int i = 0;
-  int listing_inputs_len = 0;
-  bool is_listing_inputs_ended = false;
+  int order_inputs_len = 0;
+  bool is_order_inputs_ended = false;
 
   while (true) {
     // Load inputs[i].lock_script
@@ -104,20 +119,20 @@ int check_and_calc_listing_inputs_len(void* buffer, int* ptr_listing_inputs_len)
         return 1;
       }
 
-      if (is_listing_inputs_ended) {
-        // Listing inputs must be placed before other inputs
-        if (is_listing_script(code_hash, hash_type)) {
+      if (is_order_inputs_ended) {
+        // Order inputs must be placed before other inputs
+        if (is_element_lock_script(code_hash, hash_type)) {
           return 2;
         }
       } else {
-        if (is_listing_script(code_hash, hash_type)) {
-          listing_inputs_len++;
+        if (is_element_lock_script(code_hash, hash_type)) {
+          order_inputs_len++;
         } else {
-          // Listing inputs is ended
-          is_listing_inputs_ended = true;
+          // Order inputs is ended
+          is_order_inputs_ended = true;
 
-          // Listing inputs cannot be empty
-          if (listing_inputs_len == 0) {
+          // Order inputs cannot be empty
+          if (order_inputs_len == 0) {
             return 3;
           }
         }
@@ -132,11 +147,11 @@ int check_and_calc_listing_inputs_len(void* buffer, int* ptr_listing_inputs_len)
   }
 
   // At least one other_input is required
-  if (listing_inputs_len >= i) {
+  if (order_inputs_len >= i) {
     return 5;
   }
 
-  *ptr_listing_inputs_len = listing_inputs_len;
+  *ptr_order_inputs_len = order_inputs_len;
   return 0;
 }
 
@@ -173,7 +188,7 @@ int load_witness_data(void* buffer, witness_data_t* witness_data) {
     return len == 1 ? 0 : 2;
   }
 
-  if (witness_data->op_code == OP_BUY) {
+  if (witness_data->op_code == OP_BUY || witness_data->op_code == OP_SELL) {
     // 1 bytes(OP_CODE) + 2 bytes(platform_rate) + 2 bytes(royalty_rate) + 65 bytes(signature)
     if (len == 70) {
       uint8_t* ptr = buffer + 1;
@@ -200,88 +215,15 @@ int load_witness_data(void* buffer, witness_data_t* witness_data) {
   return 6;  // Unknown op_code
 }
 
-bool isSegOutOfBounds(const mol_seg_t* inner_seg, const mol_seg_t* outer_seg) {
-  if (inner_seg->ptr < outer_seg->ptr) {
-    return true;
-  }
-  if ((inner_seg->ptr + inner_seg->size) > (outer_seg->ptr + outer_seg->size)) {
-    return true;
-  }
-  return false;
-}
-
-int get_input_listing_args(
-  void* buffer,
-  blake2b_state* blake2b_ctx_ptr,
-  size_t input_index,
-  listing_args_t* listing_args
-) {
-  // Load inputs[i].lock_script
-  uint64_t len = BUFFER_SIZE;
-  if (ckb_checked_load_cell_by_field(buffer, &len, 0, input_index, CKB_SOURCE_INPUT, CKB_CELL_FIELD_LOCK) != 0) {
-    return 1;
-  }
-
-  mol_seg_t script_seg;
-  script_seg.ptr = (uint8_t *)buffer;
-  script_seg.size = len;
-
-  // Read script.args
-  mol_seg_t args_seg = MolReader_Script_get_args(&script_seg);
-  if (args_seg.size < MOL_NUM_T_SIZE || isSegOutOfBounds(&args_seg, &script_seg)) {
-    return 2;
-  }
-  mol_seg_t raw_bytes_seg = MolReader_Bytes_raw_bytes(&args_seg);
-  if (raw_bytes_seg.size == 0 || isSegOutOfBounds(&raw_bytes_seg, &args_seg)) {
-    return 3;
-  }
-
-  // Read price
-  mol_seg_t price_seg = mol_table_slice_by_index(&raw_bytes_seg, 0);
-  if (price_seg.size != 8 || isSegOutOfBounds(&price_seg, &raw_bytes_seg)) {
-    return 4;
-  }
-  listing_args->price = *((uint64_t *)price_seg.ptr);
-
-  // Read address bytes
-  mol_seg_t address_bytes_seg = mol_table_slice_by_index(&raw_bytes_seg, 1);
-  if (address_bytes_seg.size < MOL_NUM_T_SIZE || isSegOutOfBounds(&address_bytes_seg, &raw_bytes_seg)) {
-    return 5;
-  }
-  mol_seg_t raw_address_bytes_seg = MolReader_Bytes_raw_bytes(&address_bytes_seg);
-  if (raw_address_bytes_seg.size < MOL_NUM_T_SIZE || isSegOutOfBounds(&raw_address_bytes_seg, &address_bytes_seg)) {
-    return 6;
-  }
-
-  // Calc lock hash of address
-  blake2b_init(blake2b_ctx_ptr, HASH_SIZE);
-  blake2b_update(blake2b_ctx_ptr, raw_address_bytes_seg.ptr, raw_address_bytes_seg.size);
-  if (blake2b_final(blake2b_ctx_ptr, listing_args->lock_hash, HASH_SIZE) != 0) {
-    return 7;
-  }
-
-  // Read extra data length
-  mol_seg_t extra_bytes_seg = mol_table_slice_by_index(&raw_bytes_seg, 2);
-  if (extra_bytes_seg.size < MOL_NUM_T_SIZE || isSegOutOfBounds(&extra_bytes_seg, &raw_bytes_seg)) {
-    return 8;
-  }
-  mol_seg_t raw_extra_bytes_seg = MolReader_Bytes_raw_bytes(&extra_bytes_seg);
-  if (isSegOutOfBounds(&raw_extra_bytes_seg, &extra_bytes_seg)) {
-    return 9;
-  }
-  listing_args->extra_data_length = raw_extra_bytes_seg.size * CKB_UNIT;
-  return 0;
-}
-
 /**
- * Require: 1) inputs[n].lock_hash == inputs[i].lock_script.listing_args.lock_hash
+ * Require: 1) inputs[n].lock_hash == inputs[i].lock_script.order_args.lock_hash
  *          2) inputs[n].lock_hash == outputs[i].lock_hash
- *          3) inputs[i].capacity == outputs[i].capacity + CAPACITY_DIFFERENCE + listing_args.extra_data_length
+ *          3) inputs[i].capacity == outputs[i].capacity + CANCEL_CAPACITY_DIFFERENCE + order_args.additional_size
  *          4) inputs[i].type_hash == outputs[i].type_hash
  *          5) inputs[i].data_hash == outputs[i].data_hash
  **/
-int check_cancel(void* buffer, int listing_inputs_len) {
-  int n = listing_inputs_len;
+int check_cancel(void* buffer, int order_inputs_len) {
+  int n = order_inputs_len;
   uint8_t hash[HASH_SIZE];
   uint64_t len = HASH_SIZE;
 
@@ -291,25 +233,25 @@ int check_cancel(void* buffer, int listing_inputs_len) {
     return 1;
   }
 
-  listing_args_t listing_args;
+  cancel_args_t order_args;
   blake2b_state blake2b_ctx;
   uint64_t input_capacity;
   uint64_t output_capacity;
 
   /**
-   * Check inputs[n].lock_hash == inputs[i].lock_script.listing_args.lock_hash
+   * Check inputs[n].lock_hash == inputs[i].lock_script.order_args.lock_hash
    *       inputs[n].lock_hash == outputs[i].lock_hash
-   *       inputs[i].capacity == outputs[i].capacity + CAPACITY_DIFFERENCE + listing_args.extra_data_length
+   *       inputs[i].capacity == outputs[i].capacity + CANCEL_CAPACITY_DIFFERENCE + order_args.additional_size
    **/
   int i = 0;
   while (i < n) {
-    // Load inputs[i].lock_script.listing_args
-    if (get_input_listing_args(buffer, &blake2b_ctx, i, &listing_args) != 0) {
+    // Load inputs[i].lock_script.order_args
+    if (get_cancel_args(buffer, &blake2b_ctx, i, &order_args) != 0) {
       return 2;
     }
 
-    // Check if inputs[n].lock_hash == inputs[i].lock_script.listing_args.lock_hash
-    if (memcmp(hash, listing_args.lock_hash, HASH_SIZE) != 0) {
+    // Check if inputs[n].lock_hash == inputs[i].lock_script.order_args.lock_hash
+    if (memcmp(hash, order_args.lock_hash, HASH_SIZE) != 0) {
       return 3;
     }
 
@@ -342,8 +284,8 @@ int check_cancel(void* buffer, int listing_inputs_len) {
       return 7;
     }
 
-    // Check inputs[i].capacity == outputs[i].capacity + CAPACITY_DIFFERENCE + listing_args.extra_data_length
-    if (input_capacity != output_capacity + CAPACITY_DIFFERENCE + listing_args.extra_data_length) {
+    // Check inputs[i].capacity == outputs[i].capacity + CANCEL_CAPACITY_DIFFERENCE + order_args.additional_size
+    if (input_capacity != output_capacity + CANCEL_CAPACITY_DIFFERENCE + order_args.additional_size) {
       return 8;
     }
 
@@ -372,7 +314,7 @@ int check_cancel(void* buffer, int listing_inputs_len) {
       if (ret != CKB_SUCCESS || len != HASH_SIZE) {
         return 10;
       }
-      
+
       // Check if input[i].type_hash == output[i].type_hash
       if (memcmp(hash, buffer, HASH_SIZE) != 0) {
         return 11;
@@ -438,28 +380,28 @@ int check_signature(void* buffer, witness_data_t* witness_data) {
 }
 
 /**
- * Require: 1) inputs[i].lock_script.listing_args.lock_hash == outputs[i].lock_hash
+ * Require: 1) inputs[i].lock_script.order_args.lock_hash == outputs[i].lock_hash
  *          2) outputs[i].capacity == price + capacity_difference - fee
  **/
-int check_buy(void* buffer, uint16_t fee_rate, int listing_inputs_len) {
+int check_buy(void* buffer, uint16_t fee_rate, int order_inputs_len) {
   int ret;
   uint64_t len;
   uint64_t input_capacity;
   uint64_t input_occupied_capacity;
   uint64_t capacity_difference;
   uint64_t output_capacity;
-  listing_args_t listing_args;
+  listing_args_t order_args;
   blake2b_state blake2b_ctx;
 
   int i = 0;
-  while (i < listing_inputs_len) {
-    // Load inputs[i].lock_script.listing_args
-    if (get_input_listing_args(buffer, &blake2b_ctx, i, &listing_args) != 0) {
+  while (i < order_inputs_len) {
+    // Load inputs[i].lock_script.order_args
+    if (get_listing_args(buffer, &blake2b_ctx, i, &order_args) != 0) {
       return 1;
     }
 
     // Check price
-    if (listing_args.price > MAX_PRICE) {
+    if (order_args.price > MAX_PRICE) {
       return 2;  // error price overflow
     }
 
@@ -470,8 +412,8 @@ int check_buy(void* buffer, uint16_t fee_rate, int listing_inputs_len) {
       return 3;  // error load outputs[i].lock_hash
     }
 
-    // Check if inputs[i].lock_script.listing_args == outputs[i].lock_hash
-    if (memcmp(listing_args.lock_hash, buffer, HASH_SIZE) != 0) {
+    // Check if inputs[i].lock_script.order_args.lock_hash == outputs[i].lock_hash
+    if (memcmp(order_args.lock_hash, buffer, HASH_SIZE) != 0) {
       return 4;  // error outputs[i].lock_script
     }
 
@@ -503,9 +445,9 @@ int check_buy(void* buffer, uint16_t fee_rate, int listing_inputs_len) {
     /**
      * Check outputs[i].capacity == price + capacity_difference - fee
      **/
-    capacity_difference = CAPACITY_DIFFERENCE + listing_args.extra_data_length + input_capacity - input_occupied_capacity - CKB_UNIT;
+    capacity_difference = LISTING_CAPACITY_DIFFERENCE + order_args.extra_size + input_capacity - input_occupied_capacity - CKB_UNIT;
     if (
-      output_capacity != listing_args.price + capacity_difference - (listing_args.price / 10000 * fee_rate)
+      output_capacity != order_args.price + capacity_difference - (order_args.price / 10000 * fee_rate)
     ) {
       return 8;  // error outputs[i].capacity
     }
@@ -519,16 +461,16 @@ int main() {
   int ret;
   unsigned char buffer[BUFFER_SIZE];
 
-  // Require: current_script.code_hash == LISTING_CODE_HASH && current_script.hash_type == 'type'
+  // Require: current_script.code_hash == ELEMENT_LOCK_CODE_HASH && current_script.hash_type == 'type'
   ret = check_current_script(buffer);
   if (ret != 0) {
     return 10 + ret;
   }
 
-  // Require: listing inputs [0, n - 1] at the front
+  // Require: order inputs [0, n - 1] at the front
   //          other inputs [n, total_inputs_len - 1] at the back
-  int listing_inputs_len;
-  ret = check_and_calc_listing_inputs_len(buffer, &listing_inputs_len);
+  int order_inputs_len;
+  ret = check_and_calc_order_inputs_len(buffer, &order_inputs_len);
   if (ret != 0) {
     return 20 + ret;
   }
@@ -551,7 +493,7 @@ int main() {
   }
 
   if (witness_data.op_code == OP_CANCEL) {
-    ret = check_cancel(buffer, listing_inputs_len);
+    ret = check_cancel(buffer, order_inputs_len);
     if (ret != 0) {
       return 50 + ret;
     }
@@ -562,12 +504,179 @@ int main() {
       return 70 + ret;
     }
 
-    // Check buy
-    uint16_t fee_rate = witness_data.platform_rate + witness_data.royalty_rate;
-    ret = check_buy(buffer, fee_rate, listing_inputs_len);
-    if (ret != 0) {
-      return 80 + ret;
+    if (witness_data.op_code == OP_BUY) {
+      // Check buy
+      uint16_t fee_rate = witness_data.platform_rate + witness_data.royalty_rate;
+      ret = check_buy(buffer, fee_rate, order_inputs_len);
+      if (ret != 0) {
+        return 80 + ret;
+      }
+    } else {
+      return 100;
     }
   }
+  return 0;
+}
+
+
+bool is_seg_out_of_bounds(const mol_seg_t* inner_seg, const mol_seg_t* outer_seg) {
+  if (inner_seg->ptr < outer_seg->ptr) {
+    return true;
+  }
+  if ((inner_seg->ptr + inner_seg->size) > (outer_seg->ptr + outer_seg->size)) {
+    return true;
+  }
+  return false;
+}
+
+int get_cancel_args(
+  void* buffer,
+  blake2b_state* blake2b_ctx_ptr,
+  size_t input_index,
+  cancel_args_t* args
+) {
+  // Load inputs[i].lock_script
+  uint64_t len = BUFFER_SIZE;
+  if (ckb_checked_load_cell_by_field(buffer, &len, 0, input_index, CKB_SOURCE_INPUT, CKB_CELL_FIELD_LOCK) != 0) {
+    return 1;
+  }
+
+  mol_seg_t script_seg;
+  script_seg.ptr = (uint8_t *)buffer;
+  script_seg.size = len;
+
+  // Read script.args
+  mol_seg_t args_seg = MolReader_Script_get_args(&script_seg);
+  if (args_seg.size < MOL_NUM_T_SIZE || is_seg_out_of_bounds(&args_seg, &script_seg)) {
+    return 2;
+  }
+  mol_seg_t raw_bytes_seg = MolReader_Bytes_raw_bytes(&args_seg);
+  if (raw_bytes_seg.size == 0 || is_seg_out_of_bounds(&raw_bytes_seg, &args_seg)) {
+    return 3;
+  }
+
+  // Read order.side
+  mol_seg_t side_seg = mol_table_slice_by_index(&raw_bytes_seg, 0);
+  if (side_seg.size != 1 || is_seg_out_of_bounds(&side_seg, &raw_bytes_seg)) {
+    return 4;
+  }
+
+  // Read order.args
+  mol_seg_t args_bytes_seg = mol_table_slice_by_index(&raw_bytes_seg, 1);
+  if (args_bytes_seg.size < MOL_NUM_T_SIZE || is_seg_out_of_bounds(&args_bytes_seg, &raw_bytes_seg)) {
+    return 5;
+  }
+  mol_seg_t raw_args_bytes_seg = MolReader_Bytes_raw_bytes(&args_bytes_seg);
+  if (is_seg_out_of_bounds(&raw_args_bytes_seg, &args_bytes_seg)) {
+    return 6;
+  }
+
+  // Read order.address
+  mol_seg_t address_bytes_seg = mol_table_slice_by_index(&raw_bytes_seg, 2);
+  if (address_bytes_seg.size < MOL_NUM_T_SIZE || is_seg_out_of_bounds(&address_bytes_seg, &raw_bytes_seg)) {
+    return 7;
+  }
+  mol_seg_t raw_address_bytes_seg = MolReader_Bytes_raw_bytes(&address_bytes_seg);
+  if (raw_address_bytes_seg.size < MOL_NUM_T_SIZE || is_seg_out_of_bounds(&raw_address_bytes_seg, &address_bytes_seg)) {
+    return 8;
+  }
+
+  // Calc lock hash of address
+  blake2b_init(blake2b_ctx_ptr, HASH_SIZE);
+  blake2b_update(blake2b_ctx_ptr, raw_address_bytes_seg.ptr, raw_address_bytes_seg.size);
+  if (blake2b_final(blake2b_ctx_ptr, args->lock_hash, HASH_SIZE) != 0) {
+    return 9;
+  }
+
+  // Read order.extra
+  mol_seg_t extra_bytes_seg = mol_table_slice_by_index(&raw_bytes_seg, 3);
+  if (extra_bytes_seg.size < MOL_NUM_T_SIZE || is_seg_out_of_bounds(&extra_bytes_seg, &raw_bytes_seg)) {
+    return 10;
+  }
+  mol_seg_t raw_extra_bytes_seg = MolReader_Bytes_raw_bytes(&extra_bytes_seg);
+  if (is_seg_out_of_bounds(&raw_extra_bytes_seg, &extra_bytes_seg)) {
+    return 11;
+  }
+  args->additional_size = (raw_args_bytes_seg.size + raw_extra_bytes_seg.size) * 100000000ULL;
+  return 0;
+}
+
+int get_listing_args(
+  void* buffer,
+  blake2b_state* blake2b_ctx_ptr,
+  size_t input_index,
+  listing_args_t* args
+) {
+  // Load inputs[i].lock_script
+  uint64_t len = BUFFER_SIZE;
+  if (ckb_checked_load_cell_by_field(buffer, &len, 0, input_index, CKB_SOURCE_INPUT, CKB_CELL_FIELD_LOCK) != 0) {
+    return 1;
+  }
+
+  mol_seg_t script_seg;
+  script_seg.ptr = (uint8_t *)buffer;
+  script_seg.size = len;
+
+  // Read script.args
+  mol_seg_t args_seg = MolReader_Script_get_args(&script_seg);
+  if (args_seg.size < MOL_NUM_T_SIZE || is_seg_out_of_bounds(&args_seg, &script_seg)) {
+    return 2;
+  }
+  mol_seg_t raw_bytes_seg = MolReader_Bytes_raw_bytes(&args_seg);
+  if (raw_bytes_seg.size == 0 || is_seg_out_of_bounds(&raw_bytes_seg, &args_seg)) {
+    return 3;
+  }
+
+  // Read order.side
+  mol_seg_t side_seg = mol_table_slice_by_index(&raw_bytes_seg, 0);
+  if (side_seg.size != 1 || is_seg_out_of_bounds(&side_seg, &raw_bytes_seg)) {
+    return 4;
+  }
+  if (*side_seg.ptr != ORDER_SIDE_LISTING) {
+    return 5;
+  }
+
+  // Read order.args
+  mol_seg_t args_bytes_seg = mol_table_slice_by_index(&raw_bytes_seg, 1);
+  if (args_bytes_seg.size < MOL_NUM_T_SIZE || is_seg_out_of_bounds(&args_bytes_seg, &raw_bytes_seg)) {
+    return 6;
+  }
+  mol_seg_t raw_args_bytes_seg = MolReader_Bytes_raw_bytes(&args_bytes_seg);
+  if (raw_args_bytes_seg.size != 8 || is_seg_out_of_bounds(&raw_args_bytes_seg, &args_bytes_seg)) {
+    return 7;
+  }
+  uint64_t price = 0;
+  for (size_t i = 0; i < 8; i++) {
+    price = (price << 8) | (uint64_t)(*(raw_args_bytes_seg.ptr + i));
+  }
+  args->price = price;  
+
+  // Read order.address
+  mol_seg_t address_bytes_seg = mol_table_slice_by_index(&raw_bytes_seg, 2);
+  if (address_bytes_seg.size < MOL_NUM_T_SIZE || is_seg_out_of_bounds(&address_bytes_seg, &raw_bytes_seg)) {
+    return 8;
+  }
+  mol_seg_t raw_address_bytes_seg = MolReader_Bytes_raw_bytes(&address_bytes_seg);
+  if (raw_address_bytes_seg.size < MOL_NUM_T_SIZE || is_seg_out_of_bounds(&raw_address_bytes_seg, &address_bytes_seg)) {
+    return 9;
+  }
+
+  // Calc lock hash of address
+  blake2b_init(blake2b_ctx_ptr, HASH_SIZE);
+  blake2b_update(blake2b_ctx_ptr, raw_address_bytes_seg.ptr, raw_address_bytes_seg.size);
+  if (blake2b_final(blake2b_ctx_ptr, args->lock_hash, HASH_SIZE) != 0) {
+    return 10;
+  }
+
+  // Read order.extra
+  mol_seg_t extra_bytes_seg = mol_table_slice_by_index(&raw_bytes_seg, 3);
+  if (extra_bytes_seg.size < MOL_NUM_T_SIZE || is_seg_out_of_bounds(&extra_bytes_seg, &raw_bytes_seg)) {
+    return 11;
+  }
+  mol_seg_t raw_extra_bytes_seg = MolReader_Bytes_raw_bytes(&extra_bytes_seg);
+  if (is_seg_out_of_bounds(&raw_extra_bytes_seg, &extra_bytes_seg)) {
+    return 12;
+  }
+  args->extra_size = raw_extra_bytes_seg.size * CKB_UNIT;
   return 0;
 }
