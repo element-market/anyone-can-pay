@@ -518,6 +518,15 @@ int main() {
   return 0;
 }
 
+/////////////////////////////////////////helper functions////////////////////////////////////////////////////
+uint64_t to_uint64(uint8_t* ptr) {
+    uint64_t value;
+    uint8_t* ptr_value = (uint8_t*)&value;
+    for (int i = 0; i < 8; i++) {
+        ptr_value[i] = ptr[7 - i];
+    }
+    return value;
+}
 
 bool is_seg_out_of_bounds(const mol_seg_t* inner_seg, const mol_seg_t* outer_seg) {
   if (inner_seg->ptr < outer_seg->ptr) {
@@ -645,11 +654,7 @@ int get_listing_args(
   if (raw_args_bytes_seg.size != 8 || is_seg_out_of_bounds(&raw_args_bytes_seg, &args_bytes_seg)) {
     return 7;
   }
-  uint64_t price = 0;
-  for (size_t i = 0; i < 8; i++) {
-    price = (price << 8) | (uint64_t)(*(raw_args_bytes_seg.ptr + i));
-  }
-  args->price = price;  
+  args->price = to_uint64(raw_args_bytes_seg.ptr);
 
   // Read order.address
   mol_seg_t address_bytes_seg = mol_table_slice_by_index(&raw_bytes_seg, 2);
