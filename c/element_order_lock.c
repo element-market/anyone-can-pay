@@ -260,12 +260,12 @@ int check_cancel(void* buffer, int order_inputs_len) {
     if (ret == CKB_SUCCESS && len == HASH_SIZE) {
       // Check inputs[n].lock_hash == outputs[i].lock_hash
       if (memcmp(hash, buffer, HASH_SIZE) != 0) {
-        return 5;
+        return 4;
       }
     } if (ret == CKB_INDEX_OUT_OF_BOUND) {
       break;  // Ended
     } else {
-      return 6; // Load lock_hash error
+      return 5; // Load lock_hash error
     }
     i++;
   }
@@ -284,21 +284,21 @@ int check_cancel(void* buffer, int order_inputs_len) {
       len = HASH_SIZE;
       ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE_HASH);
       if (ret != CKB_ITEM_MISSING) {
-        return 9;
+        return 6;
       }
     } else if (ret == CKB_SUCCESS && len == HASH_SIZE) {
       // Load outputs[i].type_hash
       ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE_HASH);
       if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-        return 10;
+        return 7;
       }
 
       // Check if input[i].type_hash == output[i].type_hash
       if (memcmp(hash, buffer, HASH_SIZE) != 0) {
-        return 11;
+        return 8;
       }
     } else {
-      return 12;
+      return 9;
     }
 
     // Load inputs[i].data_hash
@@ -308,15 +308,15 @@ int check_cancel(void* buffer, int order_inputs_len) {
       // Load outputs[i].data_hash
       ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_DATA_HASH);
       if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-        return 13;
+        return 10;
       }
 
       // Check if input[i].data_hash == output[i].data_hash
       if (memcmp(hash, buffer, HASH_SIZE) != 0) {
-        return 14;
+        return 11;
       }
     } else {
-      return 15;
+      return 12;
     }
 
     i++;
