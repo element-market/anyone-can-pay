@@ -137,11 +137,10 @@ int check_and_calc_order_inputs_len(void* buffer, int* ptr_order_inputs_len) {
           }
         }
       }
-    } else {
-      if (ret == CKB_LENGTH_NOT_ENOUGH) {
-        return 4; // Load lock script error
-      }
+    } else if (ret == CKB_INDEX_OUT_OF_BOUND) {
       break; // Ended
+    } else {
+      return 4; // Load script error
     }
     i++;
   }
@@ -218,9 +217,8 @@ int load_witness_data(void* buffer, witness_data_t* witness_data) {
 /**
  * Require: 1) inputs[n].lock_hash == inputs[i].lock_script.order_args.lock_hash
  *          2) inputs[n].lock_hash == outputs[i].lock_hash
- *          3) inputs[i].capacity == outputs[i].capacity + CANCEL_CAPACITY_DIFFERENCE + order_args.additional_size
- *          4) inputs[i].type_hash == outputs[i].type_hash
- *          5) inputs[i].data_hash == outputs[i].data_hash
+ *          3) inputs[i].type_hash == outputs[i].type_hash
+ *          4) inputs[i].data_hash == outputs[i].data_hash
  **/
 int check_cancel(void* buffer, int order_inputs_len) {
   int n = order_inputs_len;
@@ -235,13 +233,9 @@ int check_cancel(void* buffer, int order_inputs_len) {
 
   cancel_args_t order_args;
   blake2b_state blake2b_ctx;
-  uint64_t input_capacity;
-  uint64_t output_capacity;
 
   /**
    * Check inputs[n].lock_hash == inputs[i].lock_script.order_args.lock_hash
-   *       inputs[n].lock_hash == outputs[i].lock_hash
-   *       inputs[i].capacity == outputs[i].capacity + CANCEL_CAPACITY_DIFFERENCE + order_args.additional_size
    **/
   int i = 0;
   while (i < n) {
@@ -249,46 +243,30 @@ int check_cancel(void* buffer, int order_inputs_len) {
     if (get_cancel_args(buffer, &blake2b_ctx, i, &order_args) != 0) {
       return 2;
     }
-
-    // Check if inputs[n].lock_hash == inputs[i].lock_script.order_args.lock_hash
+    // Check inputs[n].lock_hash == inputs[i].lock_script.order_args.lock_hash
     if (memcmp(hash, order_args.lock_hash, HASH_SIZE) != 0) {
       return 3;
     }
+    i++;
+  }
 
-    // Load outputs[i].lock_hash
+  /**
+   * Check inputs[n].lock_hash == outputs[i].lock_hash
+   **/
+  i = 0;
+  while (true) {
     len = HASH_SIZE;
     ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_LOCK_HASH);
-    if (ret != CKB_SUCCESS || len != HASH_SIZE) {
-      return 4;
+    if (ret == CKB_SUCCESS && len == HASH_SIZE) {
+      // Check inputs[n].lock_hash == outputs[i].lock_hash
+      if (memcmp(hash, buffer, HASH_SIZE) != 0) {
+        return 5;
+      }
+    } if (ret == CKB_INDEX_OUT_OF_BOUND) {
+      break;  // Ended
+    } else {
+      return 6; // Load lock_hash error
     }
-
-    // Check if inputs[n].lock_hash == outputs[i].lock_hash
-    if (memcmp(hash, buffer, HASH_SIZE) != 0) {
-      return 5;
-    }
-
-    // Load inputs[i].capacity
-    len = 8;
-    ret = ckb_load_cell_by_field(
-      ((unsigned char *)&input_capacity), &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_CAPACITY
-    );
-    if (ret != CKB_SUCCESS || len != 8) {
-      return 6;
-    }
-
-    // Load outputs[i].capacity
-    ret = ckb_load_cell_by_field(
-      ((unsigned char *)&output_capacity), &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_CAPACITY
-    );
-    if (ret != CKB_SUCCESS || len != 8) {
-      return 7;
-    }
-
-    // Check inputs[i].capacity == outputs[i].capacity + CANCEL_CAPACITY_DIFFERENCE + order_args.additional_size
-    if (input_capacity != output_capacity + CANCEL_CAPACITY_DIFFERENCE + order_args.additional_size) {
-      return 8;
-    }
-
     i++;
   }
 
