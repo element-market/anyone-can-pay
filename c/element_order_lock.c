@@ -16,6 +16,7 @@
 #define OFFER_ITEM 1
 
 #define CKB_UNIT 100000000ULL
+#define MAX_GAS 1000000000ULL // 10 ckb
 #define MAX_PRICE 100000000000000000ULL // 1 billion ckb
 #define CAPACITY_DIFFERENCE 8600000000ULL // 86 ckb
 
@@ -51,6 +52,7 @@ static int get_cancel_args(void* buffer, blake2b_state* blake2b_ctx_ptr, size_t 
 static int get_listing_args(void* buffer, blake2b_state* blake2b_ctx_ptr, size_t input_index, listing_args_t* args);
 static int get_offer_args(void* buffer, blake2b_state* blake2b_ctx_ptr, size_t input_index, offer_args_t* args);
 static int load_collection_id_from_cell_data(void* buffer, int index, uint8_t** ptr_collection_id);
+static int check_gas();
 
 bool is_element_lock_script(uint8_t* code_hash, uint8_t hash_type) {
   return hash_type == 1 && memcmp(code_hash, ELEMENT_LOCK_CODE_HASH, HASH_SIZE) == 0;
@@ -614,6 +616,12 @@ int main() {
       }
     }
   }
+
+  // Check gas
+  ret = check_gas();
+  if (ret != 0) {
+    return 110 + ret;
+  }
   return 0;
 }
 
@@ -950,6 +958,46 @@ int load_collection_id_from_cell_data(void* buffer, int index, uint8_t** ptr_col
     memcpy(buffer, raw_cluster_id_seg.ptr, HASH_SIZE);
     *ptr_collection_id = buffer;
     free(p_buffer);
+  }
+  return 0;
+}
+
+int check_gas() {
+  int ret;
+  uint64_t capacity;
+
+  uint64_t len = 8;
+  uint64_t input_capacity = 0;
+  for (int i = 0; ; i++) {
+    ret = ckb_load_cell_by_field(
+      ((unsigned char *)&capacity), &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_CAPACITY
+    );
+    if (ret == CKB_INDEX_OUT_OF_BOUND) {
+      break;
+    } else if (ret == CKB_SUCCESS && len == 8) {
+      input_capacity += capacity;
+    } else {
+      return 1;
+    }
+  }
+
+  len = 8;
+  uint64_t output_capacity = 0;
+  for (int i = 0; ; i++) {
+    ret = ckb_load_cell_by_field(
+      ((unsigned char *)&capacity), &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_CAPACITY
+    );
+    if (ret == CKB_INDEX_OUT_OF_BOUND) {
+      break;
+    } else if (ret == CKB_SUCCESS && len == 8) {
+      output_capacity += capacity;
+    } else {
+      return 2;
+    }
+  }
+
+  if (input_capacity > output_capacity + MAX_GAS) {
+    return 3;
   }
   return 0;
 }
