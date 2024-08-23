@@ -46,9 +46,11 @@ typedef struct {
   uint8_t lock_hash[HASH_SIZE];
 } offer_args_t;
 
+static bool is_not_seg_tail(const mol_seg_t* inner_seg, const mol_seg_t* outer_seg);
 static int get_cancel_args(void* buffer, blake2b_state* blake2b_ctx_ptr, size_t input_index, cancel_args_t* args);
 static int get_listing_args(void* buffer, blake2b_state* blake2b_ctx_ptr, size_t input_index, listing_args_t* args);
 static int get_offer_args(void* buffer, blake2b_state* blake2b_ctx_ptr, size_t input_index, offer_args_t* args);
+static int load_collection_id_from_cell_data(void* buffer, int index, uint8_t** ptr_collection_id);
 
 bool is_element_lock_script(uint8_t* code_hash, uint8_t hash_type) {
   return hash_type == 1 && memcmp(code_hash, ELEMENT_LOCK_CODE_HASH, HASH_SIZE) == 0;
@@ -426,18 +428,20 @@ int check_buy(void* buffer, uint16_t fee_rate, int order_inputs_len) {
 
 /**
  * Require: 1) inputs[i].data == '0x' && inputs[i].type_script == null
- *          2) outputs[i].typeScript.codeHash == codeHash && outputs[i].typeScript.hashType == hashType
- *          3) outputs[i].typeScript.args == asset_id or outputs[i].data.clsId == asset_id
- *          4) opc == + 1CKB
+ *          2) outputs[i].capacity == outputs[i].occupied_capacity + 1 CKB
+ *          3) outputs[i].type_script.code_hash == order_args.code_hash 
+ *          4) outputs[i].type_script.hash_type == order_args.hash_type
+ *          5) if offer item : outputs[i].type_script.args = order_args.asset_id
+ *          6) if offer collection ; outputs[i].data.cluster_id = order_args.asset_id
  **/
 int check_sell(void* buffer, int order_inputs_len) {
-  int i;
   int ret;
   uint64_t len;
 
   /**
    * Check inputs[i].data == '0x' && inputs[i].type_script == null
    **/
+  int i;
   for (i = 0; i < order_inputs_len; i++) {
     len = 0;
     ret = ckb_load_cell_data((void *)0, &len, 0, i, CKB_SOURCE_INPUT);
@@ -482,13 +486,13 @@ int check_sell(void* buffer, int order_inputs_len) {
 
   offer_args_t order_args;
   blake2b_state blake2b_ctx;
-  mol_seg_t script_seg;
+  uint8_t* code_hash;
+  uint8_t hash_type;
   for (i = 0; i < order_inputs_len; i++) {
     // Load inputs[i].lock_script.order_args
     if (get_offer_args(buffer, &blake2b_ctx, i, &order_args) != 0) {
       return 6;
     }
-
     // Check asset_type
     if (order_args.asset_type >= ASSET_COUNT) {
       return 7; // Unknown asset type
@@ -500,22 +504,49 @@ int check_sell(void* buffer, int order_inputs_len) {
     if (ret != CKB_SUCCESS) {
       return 8;
     }
-
-    // Verify outputs[i].type_script
-    script_seg.ptr = (uint8_t *)buffer;
-    script_seg.size = len;
-    if (MolReader_Script_verify(&script_seg, false) != MOL_OK) {
+    if (get_code_hash_and_hash_type(buffer, len, &code_hash, &hash_type) != 0) {
       return 9;
     }
-
-
+    // Compare code hash
+    if (memcmp(code_hash, ASSET_SCRIPTS[order_args.asset_type].code_hash, HASH_SIZE) != 0) {
+      return 10;
+    }
+    // Compare hash type
+    if (hash_type != ASSET_SCRIPTS[order_args.asset_type].hash_type) {
+      return 11;
+    }
 
     if (order_args.offer_type == OFFER_COLLECTION) {
-
+      // Load collection id
+      uint8_t* collection_id;
+      if (load_collection_id_from_cell_data(buffer, i, &collection_id) != 0) {
+        return 12;
+      }
+      
+      // Compare collection id and order_args.asset_id
+      if (memcmp(collection_id, order_args.asset_id, HASH_SIZE) != 0) {
+        return 13;
+      }
     } else if (order_args.offer_type == OFFER_ITEM) {
+      // Load type_script.args
+      mol_seg_t script_seg;
+      script_seg.ptr = (uint8_t *)buffer;
+      script_seg.size = len;
+      mol_seg_t args_seg = MolReader_Script_get_args(&script_seg);
+      if (args_seg.size < MOL_NUM_T_SIZE || is_not_seg_tail(&args_seg, &script_seg)) {
+        return 14;
+      }
+      mol_seg_t raw_bytes_seg = MolReader_Bytes_raw_bytes(&args_seg);
+      if (raw_bytes_seg.size != HASH_SIZE || is_not_seg_tail(&raw_bytes_seg, &args_seg)) {
+        return 15;
+      }
 
+      // Compare type_script.args and order_args.asset_id
+      if (memcmp(raw_bytes_seg.ptr, order_args.asset_id, HASH_SIZE) != 0) {
+        return 16;
+      }
     } else {
-
+      return 17;
     }
   }
   return 0;
@@ -678,6 +709,7 @@ int get_cancel_args(
   if (is_not_seg_tail(&raw_extra_bytes_seg, &extra_bytes_seg)) {
     return 11;
   }
+
   return 0;
 }
 
@@ -754,6 +786,7 @@ int get_listing_args(
     return 12;
   }
   args->refund_capacity = CAPACITY_DIFFERENCE + (raw_args_bytes_seg.size + raw_extra_bytes_seg.size) * CKB_UNIT;
+
   return 0;
 }
 
@@ -830,6 +863,93 @@ int get_offer_args(
   mol_seg_t raw_extra_bytes_seg = MolReader_Bytes_raw_bytes(&extra_bytes_seg);
   if (is_not_seg_tail(&raw_extra_bytes_seg, &extra_bytes_seg)) {
     return 12;
+  }
+
+  return 0;
+}
+
+int load_collection_id_from_cell_data(void* buffer, int index, uint8_t** ptr_collection_id) {
+  // Get data.length
+  uint64_t len = 0;
+  int ret = ckb_load_cell_data((void *)0, &len, 0, index, CKB_SOURCE_OUTPUT);
+  if (ret != CKB_SUCCESS || len == 0) {
+    return 1;
+  }
+
+  // Malloc buffer if needed
+  size_t old_len = (size_t)len;
+  uint8_t* p_buffer = (len <= BUFFER_SIZE) ? (uint8_t *)buffer : malloc(old_len);
+  if (p_buffer == NULL) {
+    return 2;
+  }
+  
+  // Load cell data
+  ret = ckb_load_cell_data(p_buffer, &len, 0, index, CKB_SOURCE_OUTPUT);
+  if (ret != CKB_SUCCESS || len != old_len) {
+    if (p_buffer != buffer) {
+      free(p_buffer);
+    }
+    return 3;
+  }
+
+  mol_seg_t data_seg;
+  data_seg.ptr = p_buffer;
+  data_seg.size = len;
+
+  // Check content type bytes
+  mol_seg_t conten_type_seg = mol_table_slice_by_index(&data_seg, 0);
+  if (conten_type_seg.size < MOL_NUM_T_SIZE || is_seg_out_of_bounds(&conten_type_seg, &data_seg)) {
+    if (p_buffer != buffer) {
+      free(p_buffer);
+    }
+    return 4;
+  }
+  mol_seg_t raw_conten_type_seg = MolReader_Bytes_raw_bytes(&conten_type_seg);
+  if (is_not_seg_tail(&raw_conten_type_seg, &conten_type_seg)) {
+    if (p_buffer != buffer) {
+      free(p_buffer);
+    }
+    return 5;
+  }
+
+  // Check content bytes
+  mol_seg_t content_seg = mol_table_slice_by_index(&data_seg, 1);
+  if (content_seg.size < MOL_NUM_T_SIZE || is_seg_out_of_bounds(&content_seg, &data_seg)) {
+    if (p_buffer != buffer) {
+      free(p_buffer);
+    }
+    return 6;
+  }
+  mol_seg_t raw_content_seg = MolReader_Bytes_raw_bytes(&content_seg);
+  if (is_not_seg_tail(&raw_content_seg, &content_seg)) {
+    if (p_buffer != buffer) {
+      free(p_buffer);
+    }
+    return 7;
+  }
+
+  // Check cluster id bytes
+  mol_seg_t cluster_id_seg = mol_table_slice_by_index(&data_seg, 2);
+  if (cluster_id_seg.size < MOL_NUM_T_SIZE || is_not_seg_tail(&cluster_id_seg, &data_seg)) {
+    if (p_buffer != buffer) {
+      free(p_buffer);
+    }
+    return 8;
+  }
+  mol_seg_t raw_cluster_id_seg = MolReader_Bytes_raw_bytes(&cluster_id_seg);
+  if (raw_cluster_id_seg.size != HASH_SIZE || is_not_seg_tail(&raw_cluster_id_seg, &cluster_id_seg)) {
+    if (p_buffer != buffer) {
+      free(p_buffer);
+    }
+    return 9;
+  }
+
+  if (p_buffer == buffer) {
+    *ptr_collection_id = raw_cluster_id_seg.ptr;
+  } else {
+    memcpy(buffer, raw_cluster_id_seg.ptr, HASH_SIZE);
+    *ptr_collection_id = buffer;
+    free(p_buffer);
   }
   return 0;
 }
