@@ -36,8 +36,8 @@ typedef struct {
 
 typedef struct {
   uint64_t price;
-  uint8_t lock_hash[HASH_SIZE];
   uint64_t refund_capacity;
+  uint8_t lock_hash[HASH_SIZE];
 } listing_args_t;
 
 typedef struct {
@@ -45,6 +45,7 @@ typedef struct {
   uint8_t offer_type;
   uint8_t asset_id[HASH_SIZE];
   uint8_t lock_hash[HASH_SIZE];
+  uint64_t price;
 } offer_args_t;
 
 static bool is_not_seg_tail(const mol_seg_t* inner_seg, const mol_seg_t* outer_seg);
@@ -165,7 +166,7 @@ int check_if_contains_first_input_lock_hash(void* buffer, bool* ptr_contains) {
 
   // Load inputs[0].lock_hash
   void* ptr_hash = buffer + 1 + HASH_SIZE;
-  int ret = ckb_checked_load_cell_by_field(ptr_hash, &len, 0, 0, CKB_SOURCE_INPUT, CKB_CELL_FIELD_LOCK_HASH);
+  int ret = ckb_load_cell_by_field(ptr_hash, &len, 0, 0, CKB_SOURCE_INPUT, CKB_CELL_FIELD_LOCK_HASH);
   if (ret != CKB_SUCCESS || len != HASH_SIZE) {
     return 2;
   }
@@ -228,7 +229,7 @@ int check_cancel(void* buffer, int order_inputs_len) {
   uint64_t len = HASH_SIZE;
 
   // Load inputs[n].lock_hash
-  int ret = ckb_checked_load_cell_by_field(hash, &len, 0, n, CKB_SOURCE_INPUT, CKB_CELL_FIELD_LOCK_HASH);
+  int ret = ckb_load_cell_by_field(hash, &len, 0, n, CKB_SOURCE_INPUT, CKB_CELL_FIELD_LOCK_HASH);
   if (ret != CKB_SUCCESS || len != HASH_SIZE) {
     return 1;
   }
@@ -256,7 +257,7 @@ int check_cancel(void* buffer, int order_inputs_len) {
    **/
   for (i = 0; ; i++) {
     len = HASH_SIZE;
-    ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_LOCK_HASH);
+    ret = ckb_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_LOCK_HASH);
     if (ret == CKB_SUCCESS && len == HASH_SIZE) {
       // Check inputs[n].lock_hash == outputs[i].lock_hash
       if (memcmp(hash, buffer, HASH_SIZE) != 0) {
@@ -276,17 +277,17 @@ int check_cancel(void* buffer, int order_inputs_len) {
   for (i = 0; i < n; i++) {
     // Load inputs[i].type_hash
     len = HASH_SIZE;
-    ret = ckb_checked_load_cell_by_field(hash, &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_TYPE_HASH);
+    ret = ckb_load_cell_by_field(hash, &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_TYPE_HASH);
     if (ret == CKB_ITEM_MISSING) {
       // Load outputs[i].type_hash
       len = HASH_SIZE;
-      ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE_HASH);
+      ret = ckb_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE_HASH);
       if (ret != CKB_ITEM_MISSING) {
         return 6;
       }
     } else if (ret == CKB_SUCCESS && len == HASH_SIZE) {
       // Load outputs[i].type_hash
-      ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE_HASH);
+      ret = ckb_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE_HASH);
       if (ret != CKB_SUCCESS || len != HASH_SIZE) {
         return 7;
       }
@@ -301,10 +302,10 @@ int check_cancel(void* buffer, int order_inputs_len) {
 
     // Load inputs[i].data_hash
     len = HASH_SIZE;
-    ret = ckb_checked_load_cell_by_field(hash, &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_DATA_HASH);
+    ret = ckb_load_cell_by_field(hash, &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_DATA_HASH);
     if (ret == CKB_SUCCESS && len == HASH_SIZE) {
       // Load outputs[i].data_hash
-      ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_DATA_HASH);
+      ret = ckb_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_DATA_HASH);
       if (ret != CKB_SUCCESS || len != HASH_SIZE) {
         return 10;
       }
@@ -380,7 +381,7 @@ int check_buy(void* buffer, uint16_t fee_rate, int order_inputs_len) {
 
     // Load outputs[i].lock_hash
     len = HASH_SIZE;
-    ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_LOCK_HASH);
+    ret = ckb_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_LOCK_HASH);
     if (ret != CKB_SUCCESS || len != HASH_SIZE) {
       return 3;  // error load outputs[i].lock_hash
     }
@@ -430,8 +431,8 @@ int check_buy(void* buffer, uint16_t fee_rate, int order_inputs_len) {
 
 /**
  * Require: 1) inputs[i].data == '0x' && inputs[i].type_script == null
- *          2) outputs[i].capacity == outputs[i].occupied_capacity + 1 CKB
- *          3) outputs[i].type_script.code_hash == order_args.code_hash 
+ *          2) inputs[i].lock_script.order_args.lock_hash == outputs[i].lock_hash
+ *          3) outputs[i].type_script.code_hash == order_args.code_hash
  *          4) outputs[i].type_script.hash_type == order_args.hash_type
  *          5) if offer item : outputs[i].type_script.args = order_args.asset_id
  *          6) if offer collection ; outputs[i].data.cluster_id = order_args.asset_id
@@ -448,86 +449,154 @@ int check_sell(void* buffer, int order_inputs_len) {
     len = 0;
     ret = ckb_load_cell_data((void *)0, &len, 0, i, CKB_SOURCE_INPUT);
     if (ret != CKB_SUCCESS || len != 0) {
-      return 1;
+      return 1; // inputs[i].data != '0x'
     }
 
     len = HASH_SIZE;
     ret = ckb_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_TYPE_HASH);
     if (ret != CKB_ITEM_MISSING) {
-      return 2;
-    }
-  }
-
-  /**
-   * Check outputs[i].capacity == outputs[i].occupied_capacity + 1 CKB
-   **/
-  uint64_t output_capacity;
-  uint64_t output_occupied_capacity;
-  for (i = 0; i < order_inputs_len; i++) {
-    // Load outputs[i].capacity
-    len = 8;
-    ret = ckb_load_cell_by_field(
-      ((unsigned char *)&output_capacity), &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_CAPACITY
-    );
-    if (ret != CKB_SUCCESS || len != 8) {
-      return 3;  // error load outputs[i].capacity
-    }
-
-    // Load outputs[i].occupied_capacity
-    ret = ckb_load_cell_by_field(
-      ((unsigned char *)&output_occupied_capacity), &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_OCCUPIED_CAPACITY
-    );
-    if (ret != CKB_SUCCESS || len != 8) {
-      return 4;  // error load outputs[i].occupied_capacity
-    }
-
-    if (output_capacity != output_occupied_capacity + CKB_UNIT) {
-      return 5;
+      return 2; // inputs[i].type_script != null
     }
   }
 
   offer_args_t order_args;
   blake2b_state blake2b_ctx;
-  uint8_t* code_hash;
-  uint8_t hash_type;
   for (i = 0; i < order_inputs_len; i++) {
     // Load inputs[i].lock_script.order_args
     if (get_offer_args(buffer, &blake2b_ctx, i, &order_args) != 0) {
-      return 6;
-    }
-    // Check asset_type
-    if (order_args.asset_type >= ASSET_COUNT) {
-      return 7; // Unknown asset type
+      return 3;   // error load inputs[i].lock_script.order_args
     }
 
-    // Load outputs[i].type_script
-    len = BUFFER_SIZE;
-    ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE);
-    if (ret != CKB_SUCCESS) {
-      return 8;
+    /**
+     * Check inputs[i].lock_script.order_args.lock_hash == outputs[i].lock_hash
+     **/
+    {
+      // Load outputs[i].lock_hash
+      len = HASH_SIZE;
+      ret = ckb_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_LOCK_HASH);
+      if (ret != CKB_SUCCESS || len != HASH_SIZE) {
+        return 4;  // error load outputs[i].lock_hash
+      }
+
+      // Check inputs[i].lock_script.order_args.lock_hash == outputs[i].lock_hash
+      if (memcmp(order_args.lock_hash, buffer, HASH_SIZE) != 0) {
+        return 5;  // error outputs[i].lock_script
+      }
     }
-    if (get_code_hash_and_hash_type(buffer, len, &code_hash, &hash_type) != 0) {
-      return 9;
+
+    /**
+     * Check capacity
+     **/
+    {
+      // Load outputs[i].lock_script
+      len = BUFFER_SIZE;
+      ret = ckb_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_LOCK);
+      if (ret != CKB_SUCCESS) {
+        return 6; // error load outputs[i].lock_script
+      }
+
+      // Get outputs[i].lock_script.args
+      mol_seg_t script_seg;
+      script_seg.ptr = buffer;
+      script_seg.size = len;
+      if (MolReader_Script_verify(&script_seg, false) != MOL_OK) {
+        return 7; // error outputs[i].lock_script
+      }
+      mol_seg_t args_seg = MolReader_Script_get_args(&script_seg);
+      if (args_seg.size < MOL_NUM_T_SIZE || is_not_seg_tail(&args_seg, &script_seg)) {
+        return 8; // error outputs[i].lock_script.args
+      }
+      mol_seg_t raw_bytes_seg = MolReader_Bytes_raw_bytes(&args_seg);
+      if (is_not_seg_tail(&raw_bytes_seg, &args_seg)) {
+        return 9; // error outputs[i].lock_script.args
+      }
+
+      // Calculate min_input_capacity
+      uint64_t min_input_capacity = (8 + 33 + raw_bytes_seg.size) * CKB_UNIT + order_args.price;
+      if (min_input_capacity <= order_args.price) {
+        return 10;  // price overflow
+      }
+
+      // Load inputs[i].capacity
+      uint64_t capacity;
+      len = 8;
+      ret = ckb_load_cell_by_field(
+        ((unsigned char *)&capacity), &len, 0, i, CKB_SOURCE_INPUT, CKB_CELL_FIELD_CAPACITY
+      );
+      if (ret != CKB_SUCCESS || len != 8) {
+        return 11;  // error load inputs[i].capacity
+      }
+      if (capacity < min_input_capacity) {
+        return 12;  // error order.price or inputs[i].capacity
+      }
+      uint64_t diff = capacity - min_input_capacity;
+
+      // Load outputs[i].capacity
+      ret = ckb_load_cell_by_field(
+        ((unsigned char *)&capacity), &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_CAPACITY
+      );
+      if (ret != CKB_SUCCESS || len != 8) {
+        return 13;  // error load outputs[i].capacity
+      }
+
+      // Load outputs[i].occupied_capacity
+      uint64_t occupied_capacity;
+      ret = ckb_load_cell_by_field(
+        ((unsigned char *)&occupied_capacity), &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_OCCUPIED_CAPACITY
+      );
+      if (ret != CKB_SUCCESS || len != 8) {
+        return 14;  // error load outputs[i].occupied_capacity
+      }
+
+      // Check capacity
+      if (capacity != diff + occupied_capacity + CKB_UNIT) {
+        return 15;  // error outputs[i].capacity
+      }
     }
-    // Compare code hash
-    if (memcmp(code_hash, ASSET_SCRIPTS[order_args.asset_type].code_hash, HASH_SIZE) != 0) {
-      return 10;
-    }
-    // Compare hash type
-    if (hash_type != ASSET_SCRIPTS[order_args.asset_type].hash_type) {
-      return 11;
+
+    /**
+     * Check outputs[i].type_script.code_hash == order_args.code_hash
+     *      outputs[i].type_script.hash_type == order_args.hash_type
+     **/
+    {
+      // Load outputs[i].type_script
+      len = BUFFER_SIZE;
+      ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE);
+      if (ret != CKB_SUCCESS) {
+        return 16;  // error load outputs[i].type_script
+      }
+
+      // Loadd code_hash and hash_type
+      uint8_t* code_hash;
+      uint8_t hash_type;
+      if (get_code_hash_and_hash_type(buffer, len, &code_hash, &hash_type) != 0) {
+        return 17;
+      }
+
+      // Check asset_type
+      if (order_args.asset_type >= ASSET_COUNT) {
+        return 18;  // Unknown asset type
+      }
+      // Compare code hash
+      if (memcmp(code_hash, ASSET_SCRIPTS[order_args.asset_type].code_hash, HASH_SIZE) != 0) {
+        return 19;
+      }
+      // Compare hash type
+      if (hash_type != ASSET_SCRIPTS[order_args.asset_type].hash_type) {
+        return 20;
+      }
     }
 
     if (order_args.offer_type == OFFER_COLLECTION) {
       // Load collection id
       uint8_t* collection_id;
       if (load_collection_id_from_cell_data(buffer, i, &collection_id) != 0) {
-        return 12;
+        return 21;  // error load collection_id
       }
-      
+
       // Compare collection id and order_args.asset_id
       if (memcmp(collection_id, order_args.asset_id, HASH_SIZE) != 0) {
-        return 13;
+        return 22;
       }
     } else if (order_args.offer_type == OFFER_ITEM) {
       // Load type_script.args
@@ -548,7 +617,7 @@ int check_sell(void* buffer, int order_inputs_len) {
         return 16;
       }
     } else {
-      return 17;
+      return 17;  // Unknown offer_type
     }
   }
   return 0;
@@ -839,12 +908,13 @@ int get_offer_args(
     return 6;
   }
   mol_seg_t raw_args_bytes_seg = MolReader_Bytes_raw_bytes(&args_bytes_seg);
-  if (raw_args_bytes_seg.size != 34 || is_not_seg_tail(&raw_args_bytes_seg, &args_bytes_seg)) {
+  if (raw_args_bytes_seg.size != 42 || is_not_seg_tail(&raw_args_bytes_seg, &args_bytes_seg)) {
     return 7;
   }
   args->asset_type = *(raw_args_bytes_seg.ptr);
   args->offer_type = *(raw_args_bytes_seg.ptr + 1);
-  memcpy(args->asset_id, raw_args_bytes_seg.ptr + 2, HASH_SIZE);
+  args->price = to_uint64(raw_args_bytes_seg.ptr + 2);
+  memcpy(args->asset_id, raw_args_bytes_seg.ptr + 10, HASH_SIZE);
 
   // Read order.address
   mol_seg_t address_bytes_seg = mol_table_slice_by_index(&raw_bytes_seg, 2);
@@ -890,7 +960,7 @@ int load_collection_id_from_cell_data(void* buffer, int index, uint8_t** ptr_col
   if (p_buffer == NULL) {
     return 2;
   }
-  
+
   // Load cell data
   ret = ckb_load_cell_data(p_buffer, &len, 0, index, CKB_SOURCE_OUTPUT);
   if (ret != CKB_SUCCESS || len != old_len) {
