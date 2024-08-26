@@ -689,7 +689,7 @@ int main() {
   // Check gas
   ret = check_gas();
   if (ret != 0) {
-    return 110 + ret;
+    return 120 + ret;
   }
   return 0;
 }
