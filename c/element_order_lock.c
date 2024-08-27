@@ -605,19 +605,19 @@ int check_sell(void* buffer, int order_inputs_len) {
       script_seg.size = len;
       mol_seg_t args_seg = MolReader_Script_get_args(&script_seg);
       if (args_seg.size < MOL_NUM_T_SIZE || is_not_seg_tail(&args_seg, &script_seg)) {
-        return 14;
+        return 23;
       }
       mol_seg_t raw_bytes_seg = MolReader_Bytes_raw_bytes(&args_seg);
       if (raw_bytes_seg.size != HASH_SIZE || is_not_seg_tail(&raw_bytes_seg, &args_seg)) {
-        return 15;
+        return 24;
       }
 
       // Compare type_script.args and order_args.asset_id
       if (memcmp(raw_bytes_seg.ptr, order_args.asset_id, HASH_SIZE) != 0) {
-        return 16;
+        return 25;
       }
     } else {
-      return 17;  // Unknown offer_type
+      return 26;  // Unknown offer_type
     }
   }
   return 0;
