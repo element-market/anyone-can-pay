@@ -52,7 +52,7 @@ static bool is_not_seg_tail(const mol_seg_t* inner_seg, const mol_seg_t* outer_s
 static int get_cancel_args(void* buffer, blake2b_state* blake2b_ctx_ptr, size_t input_index, cancel_args_t* args);
 static int get_listing_args(void* buffer, blake2b_state* blake2b_ctx_ptr, size_t input_index, listing_args_t* args);
 static int get_offer_args(void* buffer, blake2b_state* blake2b_ctx_ptr, size_t input_index, offer_args_t* args);
-static int load_collection_id_from_cell_data(void* buffer, int index, uint8_t** ptr_collection_id);
+static int load_cluster_id_from_cell_data(void* buffer, int index, uint8_t** ptr_cluster_id);
 static int check_gas();
 
 bool is_element_lock_script(uint8_t* code_hash, uint8_t hash_type) {
@@ -554,70 +554,82 @@ int check_sell(void* buffer, int order_inputs_len) {
       }
     }
 
-    /**
-     * Check outputs[i].type_script.code_hash == order_args.code_hash
-     *      outputs[i].type_script.hash_type == order_args.hash_type
-     **/
-    {
-      // Load outputs[i].type_script
-      len = BUFFER_SIZE;
-      ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE);
-      if (ret != CKB_SUCCESS) {
-        return 16;  // error load outputs[i].type_script
-      }
+    // Load outputs[i].type_script
+    len = BUFFER_SIZE;
+    ret = ckb_checked_load_cell_by_field(buffer, &len, 0, i, CKB_SOURCE_OUTPUT, CKB_CELL_FIELD_TYPE);
+    if (ret != CKB_SUCCESS) {
+      return 16;  // error load outputs[i].type_script
+    }
 
-      // Loadd code_hash and hash_type
-      uint8_t* code_hash;
-      uint8_t hash_type;
-      if (get_code_hash_and_hash_type(buffer, len, &code_hash, &hash_type) != 0) {
-        return 17;
-      }
-
-      // Check asset_type
-      if (order_args.asset_type >= ASSET_COUNT) {
-        return 18;  // Unknown asset type
-      }
-      // Compare code hash
-      if (memcmp(code_hash, ASSET_SCRIPTS[order_args.asset_type].code_hash, HASH_SIZE) != 0) {
-        return 19;
-      }
-      // Compare hash type
-      if (hash_type != ASSET_SCRIPTS[order_args.asset_type].hash_type) {
-        return 20;
-      }
+    // Load code_hash and hash_type
+    uint8_t* code_hash;
+    uint8_t hash_type;
+    if (get_code_hash_and_hash_type(buffer, len, &code_hash, &hash_type) != 0) {
+      return 17;  // error load code_hash and hash_type
     }
 
     if (order_args.offer_type == OFFER_COLLECTION) {
-      // Load collection id
-      uint8_t* collection_id;
-      if (load_collection_id_from_cell_data(buffer, i, &collection_id) != 0) {
-        return 21;  // error load collection_id
+      // Check asset_type
+      if (order_args.asset_type != 0) {
+        return 18;  // Unknown asset_type
       }
 
-      // Compare collection id and order_args.asset_id
-      if (memcmp(collection_id, order_args.asset_id, HASH_SIZE) != 0) {
-        return 22;
+      // Check code_hash and hash_type
+      int j = 0;
+      while (j < ASSET_COUNT) {
+        if (
+          memcmp(code_hash, ASSET_SCRIPTS[j].code_hash, HASH_SIZE) == 0 &&
+          hash_type == ASSET_SCRIPTS[j].hash_type
+        ) {
+          break;
+        }
+        j++;
+      }
+      if (j >= ASSET_COUNT) {
+        return 19;  // Unknown asset
+      }
+
+      // Load cluster_id
+      uint8_t* cluster_id;
+      if (load_cluster_id_from_cell_data(buffer, i, &cluster_id) != 0) {
+        return 20;  // error load cluster_id
+      }
+
+      // Compare cluster_id and order_args.asset_id
+      if (memcmp(cluster_id, order_args.asset_id, HASH_SIZE) != 0) {
+        return 21;
       }
     } else if (order_args.offer_type == OFFER_ITEM) {
-      // Load type_script.args
+      if (order_args.asset_type >= ASSET_COUNT) {
+        return 22;  // Unknown asset type
+      }
+      // Compare code_hash and hash_type
+      if (
+        memcmp(code_hash, ASSET_SCRIPTS[order_args.asset_type].code_hash, HASH_SIZE) != 0 ||
+        hash_type != ASSET_SCRIPTS[order_args.asset_type].hash_type
+      ) {
+        return 23;
+      }
+
+      // Load asset_id
       mol_seg_t script_seg;
       script_seg.ptr = (uint8_t *)buffer;
       script_seg.size = len;
       mol_seg_t args_seg = MolReader_Script_get_args(&script_seg);
       if (args_seg.size < MOL_NUM_T_SIZE || is_not_seg_tail(&args_seg, &script_seg)) {
-        return 23;
+        return 24;
       }
       mol_seg_t raw_bytes_seg = MolReader_Bytes_raw_bytes(&args_seg);
       if (raw_bytes_seg.size != HASH_SIZE || is_not_seg_tail(&raw_bytes_seg, &args_seg)) {
-        return 24;
-      }
-
-      // Compare type_script.args and order_args.asset_id
-      if (memcmp(raw_bytes_seg.ptr, order_args.asset_id, HASH_SIZE) != 0) {
         return 25;
       }
+
+      // Compare asset_id and order_args.asset_id
+      if (memcmp(raw_bytes_seg.ptr, order_args.asset_id, HASH_SIZE) != 0) {
+        return 26;
+      }
     } else {
-      return 26;  // Unknown offer_type
+      return 27;  // Unknown offer_type
     }
   }
   return 0;
@@ -946,7 +958,7 @@ int get_offer_args(
   return 0;
 }
 
-int load_collection_id_from_cell_data(void* buffer, int index, uint8_t** ptr_collection_id) {
+int load_cluster_id_from_cell_data(void* buffer, int index, uint8_t** ptr_cluster_id) {
   // Get data.length
   uint64_t len = 0;
   int ret = ckb_load_cell_data((void *)0, &len, 0, index, CKB_SOURCE_OUTPUT);
@@ -1023,10 +1035,10 @@ int load_collection_id_from_cell_data(void* buffer, int index, uint8_t** ptr_col
   }
 
   if (p_buffer == buffer) {
-    *ptr_collection_id = raw_cluster_id_seg.ptr;
+    *ptr_cluster_id = raw_cluster_id_seg.ptr;
   } else {
     memcpy(buffer, raw_cluster_id_seg.ptr, HASH_SIZE);
-    *ptr_collection_id = buffer;
+    *ptr_cluster_id = buffer;
     free(p_buffer);
   }
   return 0;
